@@ -1,0 +1,50 @@
+```yaml
+name: Build Shadowsocks-C Static AMD64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build static binaries
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --file docker/static/Dockerfile \
+            --target artifacts \
+            --output type=local,dest=dist \
+            .
+
+      - name: Inspect binaries
+        run: |
+          find dist -type f -maxdepth 5 -print
+          find dist -type f -exec file {} \;
+
+      - name: Package artifacts
+        run: |
+          tar -czf shadowsocks-c-linux-amd64.tar.gz -C dist .
+
+          sha256sum shadowsocks-c-linux-amd64.tar.gz \
+            > shadowsocks-c-linux-amd64.tar.gz.sha256
+
+      - name: Upload static binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadowsocks-c-linux-amd64
+          path: |
+            shadowsocks-c-linux-amd64.tar.gz
+            shadowsocks-c-linux-amd64.tar.gz.sha256
+          retention-days: 30
+```
