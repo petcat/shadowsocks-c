@@ -1,4 +1,3 @@
-```yaml
 name: Build Shadowsocks-C Static AMD64
 
 on:
@@ -29,13 +28,12 @@ jobs:
 
       - name: Inspect binaries
         run: |
-          find dist -type f -maxdepth 5 -print
+          find dist -maxdepth 5 -type f -print
           find dist -type f -exec file {} \;
 
       - name: Package artifacts
         run: |
           tar -czf shadowsocks-c-linux-amd64.tar.gz -C dist .
-
           sha256sum shadowsocks-c-linux-amd64.tar.gz \
             > shadowsocks-c-linux-amd64.tar.gz.sha256
 
@@ -47,4 +45,3 @@ jobs:
             shadowsocks-c-linux-amd64.tar.gz
             shadowsocks-c-linux-amd64.tar.gz.sha256
           retention-days: 30
-```
