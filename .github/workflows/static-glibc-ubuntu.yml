@@ -1,16 +1,6 @@
 name: static-glibc-ubuntu
 
-# Build fully static glibc/gcc binaries for the Debian/Ubuntu family, then
-# package only build/bin/{ss-local,ss-server,ss-tunnel,ss-manager,ss-redir}
-# into a zip and publish it as a GitHub release asset.
-#
-# The project's WITH_STATIC=ON only links the bundled third-party libraries
-# statically. To get a real static ELF (no interpreter, no NEEDED entries) we
-# additionally pass -static to the executable link step.
-#
-# Note: glibc static binaries cannot use NSS at runtime, so `ss-local -a <user>`
-# (getpwnam/getgrnam) needs the shared NSS modules of the glibc used at link
-# time. Everything else (crypto, event loop, DNS via c-ares) is self-contained.
+# Build fully static glibc/gcc binaries on the native Ubuntu 24.04 runner.
 
 on:
   push:
@@ -33,12 +23,8 @@ env:
 
 jobs:
   static-glibc:
-    name: gcc / glibc static (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04]
+    name: gcc / glibc static (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     steps:
@@ -68,7 +54,8 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Unit and vendor tests
-        run: ctest --test-dir build -L 'unit|vendor' --output-on-failure --no-tests=error
+        # Static binaries cannot be instrumented through LD_PRELOAD.
+        run: ctest --test-dir build -L 'unit|vendor' -E '^alloc_steady_' --output-on-failure --no-tests=error
 
       - name: Real TCP/UDP relay and async DNS tests
         run: |
@@ -78,12 +65,23 @@ jobs:
       - name: Verify fully static ELF binaries
         run: |
           set -eu
-          shopt -s nullglob
-          for binary in build/bin/ss-local build/bin/ss-server build/bin/ss-tunnel build/bin/ss-manager build/bin/ss-redir; do
+          for binary in \
+            build/bin/ss-local \
+            build/bin/ss-server \
+            build/bin/ss-tunnel \
+            build/bin/ss-manager \
+            build/bin/ss-redir
+          do
             test -f "$binary" || { echo "missing $binary"; exit 1; }
             file "$binary"
-            ! readelf -l "$binary" | grep -q INTERP || { echo "INTERP found: $binary"; exit 1; }
-            ! readelf -d "$binary" | grep -q NEEDED || { echo "NEEDED found: $binary"; exit 1; }
+            ! readelf -l "$binary" | grep -q INTERP || {
+              echo "INTERP found: $binary"
+              exit 1
+            }
+            ! readelf -d "$binary" | grep -q NEEDED || {
+              echo "NEEDED found: $binary"
+              exit 1
+            }
           done
           echo "OK: all five binaries are fully static"
 
@@ -96,18 +94,28 @@ jobs:
             aarch64|arm64) ARCH=arm64 ;;
             *) ARCH="$(uname -m)" ;;
           esac
+
           rm -rf "$PWD/dist"
           mkdir -p "$PWD/dist"
+
           for b in ss-local ss-server ss-tunnel ss-manager ss-redir; do
             cp "build/bin/$b" "$PWD/dist/$b"
           done
+
           ZIP="$PWD/shadowsocks-c-linux-glibc-${ARCH}-${SHORT_SHA::8}.zip"
-          ( cd "$PWD/dist" && zip -9 -X "$ZIP" ss-local ss-server ss-tunnel ss-manager ss-redir )
+
+          (
+            cd "$PWD/dist"
+            zip -9 -X "$ZIP" \
+              ss-local ss-server ss-tunnel ss-manager ss-redir
+          )
+
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           else
             TAG="static-glibc-${ARCH}-${SHORT_SHA::8}"
           fi
+
           echo "arch=$ARCH" >> "$GITHUB_OUTPUT"
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -128,7 +136,7 @@ jobs:
       - name: Upload zip as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: shadowsocks-c-glibc-${{ matrix.os }}-${{ steps.package.outputs.arch }}
+          name: shadowsocks-c-glibc-ubuntu-24.04-${{ steps.package.outputs.arch }}
           path: ${{ steps.package.outputs.zip }}
           if-no-files-found: error
           retention-days: 14
