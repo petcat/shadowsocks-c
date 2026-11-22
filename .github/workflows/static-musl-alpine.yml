@@ -1,16 +1,7 @@
 name: static-musl-alpine
 
-# Build fully static musl/clang binaries for the Alpine family, then package
-# only build/bin/{ss-local,ss-server,ss-tunnel,ss-manager,ss-redir} into a zip
-# and publish it as a GitHub release asset.
-#
-# GitHub does not provide Alpine-hosted runners, so the build runs inside an
-# Alpine container on an Ubuntu runner. The toolchain and link flags mirror the
-# project's own validated static build (docker/static/Dockerfile):
-#   clang + lld + compiler-rt + libunwind, -static -fuse-ld=lld
-#
-# The source tree is mounted read-only; the build happens inside the container
-# and only the five binaries are copied back to the runner.
+# Build fully static musl/clang binaries using docker/static/Dockerfile.
+# Ubuntu is only the GitHub Actions host; compilation and tests run in Alpine.
 
 on:
   push:
@@ -33,67 +24,52 @@ env:
 
 jobs:
   static-musl:
-    name: clang / musl static (Alpine ${{ matrix.alpine }})
+    name: clang / musl static (Alpine 3.24)
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        alpine: ['3.24']
     timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Install packaging tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends binutils file zip unzip
+          sudo apt-get install -y --no-install-recommends \
+            binutils file zip unzip
 
-      - name: Build and test fully static musl binaries in Alpine
+      - name: Build and test musl binaries with the project Dockerfile
         run: |
-          mkdir -p "$PWD/dist"
-          docker run --rm \
-            -v "$PWD:/src:ro" \
-            -v "$PWD/dist:/out" \
-            -w /tmp \
-            "alpine:${{ matrix.alpine }}" \
-            sh -ec '
-              set -eux
-              apk add --no-cache \
-                clang lld make musl-dev compiler-rt llvm-libunwind-static \
-                g++ libstdc++-dev cmake linux-headers python3 binutils file zip
-              cmake -S /src -B /build -G Ninja \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_C_COMPILER=clang \
-                -DCMAKE_CXX_COMPILER=clang++ \
-                -DSS_DEPENDENCY_MODE=bundled \
-                -DWITH_STATIC=ON \
-                -DSS_BUILD_STATIC_LIBRARY=OFF \
-                -DSS_BUILD_SHARED_LIBRARY=OFF \
-                -DSS_MINIMAL=OFF \
-                -DCMAKE_EXE_LINKER_FLAGS="-static -fuse-ld=lld --rtlib=compiler-rt --unwindlib=libunwind" \
-                -DCMAKE_INSTALL_PREFIX=/out
-              cmake --build /build --parallel "$(nproc)"
-              ctest --test-dir /build -L "unit|vendor" --output-on-failure --no-tests=error
-              python3 /src/tests/interop.py --self --bin /build/bin
-              python3 /src/tests/async_dns_interop.py --bin /build/bin
-              for b in ss-local ss-server ss-tunnel ss-manager ss-redir; do
-                test -f "/build/bin/$b"
-                strip "/build/bin/$b"
-                cp "/build/bin/$b" "/out/$b"
-              done
-            '
-          # The container writes as root; give the runner ownership back.
-          sudo chown -R "$(id -u):$(id -g)" "$PWD/dist"
+          docker buildx build \
+            --platform linux/amd64 \
+            --file docker/static/Dockerfile \
+            --target artifacts \
+            --output type=local,dest=dist \
+            .
 
       - name: Verify fully static ELF binaries
         run: |
           set -eu
-          for binary in dist/ss-local dist/ss-server dist/ss-tunnel dist/ss-manager dist/ss-redir; do
+          for name in \
+            ss-local \
+            ss-server \
+            ss-tunnel \
+            ss-manager \
+            ss-redir
+          do
+            binary="dist/bin/$name"
             test -f "$binary" || { echo "missing $binary"; exit 1; }
             file "$binary"
-            ! readelf -l "$binary" | grep -q INTERP || { echo "INTERP found: $binary"; exit 1; }
-            ! readelf -d "$binary" | grep -q NEEDED || { echo "NEEDED found: $binary"; exit 1; }
+            ! readelf -l "$binary" | grep -q INTERP || {
+              echo "INTERP found: $binary"
+              exit 1
+            }
+            ! readelf -d "$binary" | grep -q NEEDED || {
+              echo "NEEDED found: $binary"
+              exit 1
+            }
           done
           echo "OK: all five binaries are fully static"
 
@@ -106,13 +82,21 @@ jobs:
             aarch64|arm64) ARCH=arm64 ;;
             *) ARCH="$(uname -m)" ;;
           esac
+
           ZIP="$PWD/shadowsocks-c-linux-musl-${ARCH}-${SHORT_SHA::8}.zip"
-          ( cd "$PWD/dist" && zip -9 -X "$ZIP" ss-local ss-server ss-tunnel ss-manager ss-redir )
+
+          (
+            cd "$PWD/dist/bin"
+            zip -9 -X "$ZIP" \
+              ss-local ss-server ss-tunnel ss-manager ss-redir
+          )
+
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           else
             TAG="static-musl-${ARCH}-${SHORT_SHA::8}"
           fi
+
           echo "arch=$ARCH" >> "$GITHUB_OUTPUT"
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -133,7 +117,7 @@ jobs:
       - name: Upload zip as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: shadowsocks-c-musl-alpine${{ matrix.alpine }}-${{ steps.package.outputs.arch }}
+          name: shadowsocks-c-musl-alpine3.24-${{ steps.package.outputs.arch }}
           path: ${{ steps.package.outputs.zip }}
           if-no-files-found: error
           retention-days: 14
