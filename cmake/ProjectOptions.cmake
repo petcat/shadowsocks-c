@@ -25,6 +25,21 @@ function(ss_project_options target)
         endif()
     else()
         target_compile_options(${target} PRIVATE -Wall -Wno-deprecated-declarations -fno-strict-aliasing)
+        # C++ sources: no exceptions or RTTI, and no locks around function
+        # statics (the event loop is single-threaded). New C++ code also opts
+        # into -Wextra through ss_strict_warnings(); modules ported from C get
+        # it when they are rewritten.
+        target_compile_options(${target} PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti -fno-threadsafe-statics>)
+        # libstdc++ 15 enables its assertions at -O0, and they call
+        # __glibcxx_assert_fail from the C++ runtime, which the programs and
+        # libshadowsocks-c must not need (scripts/check_cxx_runtime.py).
+        target_compile_definitions(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:_GLIBCXX_NO_ASSERTIONS>)
+        # GCC's C++ -Wall adds -Wsign-compare and -Wclass-memaccess, which C's
+        # -Wall does not have. Modules converted from C keep the warning set
+        # they were written against; ss_strict_warnings() turns both back on.
+        target_compile_options(${target} PRIVATE
+            $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-Wno-sign-compare -Wno-class-memaccess>)
         if(SS_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE -Werror)
         endif()
@@ -48,5 +63,16 @@ function(ss_project_options target)
     if(ENABLE_COVERAGE)
         target_compile_options(${target} PRIVATE -O0 --coverage)
         target_link_options(${target} PRIVATE --coverage)
+    endif()
+endfunction()
+
+# Extra warnings for source files written as C++ from the start (src/core,
+# src/event, src/crypto and their tests). Per file, so targets that also
+# compile converted C modules keep those at -Wall. Source properties are
+# directory-scoped: call this from the directory that defines the targets.
+function(ss_strict_warnings)
+    if(NOT MSVC)
+        set_source_files_properties(${ARGN} PROPERTIES COMPILE_OPTIONS
+            "-Wextra;$<$<CXX_COMPILER_ID:GNU>:-Wsign-compare>;$<$<CXX_COMPILER_ID:GNU>:-Wclass-memaccess>")
     endif()
 endfunction()
